@@ -3,7 +3,9 @@
 """Extraction des IP posant problème depuis des rapports DMARC.
 
 Parcourt tous les fichiers .zip et .gz (et .xml) du répertoire courant,
-détecte les enregistrements en échec DKIM ou SPF, puis produit
+détecte les enregistrements en échec DKIM ou SPF, supprime les rapports
+sans problème (comportement par défaut ; --garder pour les conserver),
+renomme les rapports conservés avec leur report_id, puis produit
 "ip_probleme.csv" avec, par IP :
   - l'adresse IP
   - le propriétaire (WHOIS)
@@ -217,13 +219,14 @@ def extract_problems_from_xml(xml_bytes, problems):
 def main():
     parser = argparse.ArgumentParser(description="Extraction des IP problématiques des rapports DMARC.")
     parser.add_argument("--renommer", action="store_true", help="renommer les rapports en ajoutant le report_id au nom de fichier")
-    parser.add_argument("--nettoyer", action="store_true", help="supprimer les rapports sans problème et renommer les autres avec le report_id")
+    parser.add_argument("--nettoyer", action="store_true", help="supprimer les rapports sans problème et renommer les autres avec le report_id (défaut)")
+    parser.add_argument("--garder", action="store_true", help="ne rien supprimer : garder tous les rapports (extraction seule)")
     args = parser.parse_args()
     fichiers = iter_report_files()
     if not fichiers:
         print("Aucun fichier zip/gz/xml trouvé dans le répertoire courant.")
         return 1
-    if args.nettoyer:
+    if not args.garder:
         nettoyer_rapports(fichiers)
         fichiers = iter_report_files()
     elif args.renommer:
