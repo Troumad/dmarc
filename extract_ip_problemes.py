@@ -18,6 +18,7 @@ import argparse
 import csv
 import glob
 import gzip
+import hashlib
 import os
 import re
 import socket
@@ -152,10 +153,18 @@ def nettoyer_rapports(fichiers):
     """Supprime les rapports sans problème et renomme les autres avec le report_id."""
     supprimes = 0
     conserves = 0
+    empreintes_vues = set()
     for path in fichiers:
         contenu = read_xml_from_file(path)
         if not contenu:
             continue
+        empreintes = [hashlib.sha256(x).hexdigest() for x in contenu]
+        if all(e in empreintes_vues for e in empreintes):
+            os.remove(path)
+            supprimes += 1
+            print(f"supprimé (déjà traité) : {path}")
+            continue
+        empreintes_vues.update(empreintes)
         if any(xml_a_problemes(xml_bytes) for xml_bytes in contenu):
             for xml_bytes in contenu:
                 report_id = extraire_report_id(xml_bytes)
@@ -167,7 +176,7 @@ def nettoyer_rapports(fichiers):
             os.remove(path)
             supprimes += 1
             print(f"supprimé (aucun problème) : {path}")
-    print(f"{supprimes} rapport(s) sans problème supprimé(s), {conserves} conservé(s).")
+    print(f"{supprimes} rapport(s) supprimé(s) (sans problème ou en double), {conserves} conservé(s).")
 
 
 def extract_problems_from_xml(xml_bytes, problems):
@@ -233,16 +242,15 @@ def main():
         renommer_rapports(fichiers)
         fichiers = iter_report_files()
     problems = {}
-    report_ids_vus = set()
+    empreintes_vues = set()
     rapports_ignore = 0
     for path in fichiers:
         for xml_bytes in read_xml_from_file(path):
-            report_id = extraire_report_id(xml_bytes)
-            if report_id and report_id in report_ids_vus:
+            empreinte = hashlib.sha256(xml_bytes).hexdigest()
+            if empreinte in empreintes_vues:
                 rapports_ignore += 1
                 continue
-            if report_id:
-                report_ids_vus.add(report_id)
+            empreintes_vues.add(empreinte)
             extract_problems_from_xml(xml_bytes, problems)
     if rapports_ignore:
         print(f"{rapports_ignore} rapport(s) en double ignoré(s).")
