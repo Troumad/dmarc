@@ -75,7 +75,7 @@ def whois_query(server, query):
 
 
 _CLE_ORG_RE = re.compile(r"^(netname|org-name|orgname|organization|owner|descr|resourcename)", re.IGNORECASE)
-_REFERAL_RE = re.compile(r"^refer:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
+_REFERAL_RE = re.compile(r"^(?:refer|whois):\s*(\S+)", re.IGNORECASE | re.MULTILINE)
 
 
 def lookup_ip_owner(ip, cache):
