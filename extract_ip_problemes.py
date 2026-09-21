@@ -108,42 +108,64 @@ def extraire_report_id(xml_bytes):
     return report_id or None
 
 
+def renommer_fichier_avec_report_id(path, report_id):
+    """Renomme un fichier en y ajoutant le report_id ; renvoie le nouveau chemin."""
+    report_id_propre = re.sub(r"[!/:\*\?\"<>|]+", "_", report_id)
+    if path.lower().endswith(".xml.gz"):
+        base, ext = path[:-7], ".xml.gz"
+    else:
+        base, ext = os.path.splitext(path)
+    if base.endswith("!" + report_id_propre):
+        return path
+    nouveau_nom = f"{base}!{report_id_propre}{ext}"
+    if nouveau_nom == path or os.path.exists(nouveau_nom):
+        return path
+    os.rename(path, nouveau_nom)
+    print(f"{path} -> {os.path.basename(nouveau_nom)}")
+    return nouveau_nom
+
+
 def renommer_rapports(fichiers):
     """Renomme les rapports en expéditeur!domaine!début!fin!report_id.ext.
 
     Évite les collisions : les rapports Google/Microsoft d'une même journée
     partagent le même nom de fichier alors que leur report_id diffère.
     """
-    renommes = 0
     for path in fichiers:
         for xml_bytes in read_xml_from_file(path):
             report_id = extraire_report_id(xml_bytes)
-            if not report_id:
-                continue
-            report_id_propre = re.sub(r"[!/:\*\?\"<>|]+", "_", report_id)
-            if path.lower().endswith(".xml.gz"):
-                base, ext = path[:-7], ".xml.gz"
-            else:
-                base, ext = os.path.splitext(path)
-            nouveau_nom = f"{base}!{report_id_propre}{ext}"
-            if nouveau_nom == path or os.path.exists(nouveau_nom):
-                continue
-            os.rename(path, nouveau_nom)
-            renommes += 1
-            print(f"{path} -> {os.path.basename(nouveau_nom)}")
-            break
-    if renommes:
-        print(f"{renommes} fichier(s) renommé(s).")
+            if report_id:
+                if renommer_fichier_avec_report_id(path, report_id) != path:
+                    break
 
 
-def extraire_report_id(xml_bytes):
-    """Renvoie le report_id d'un rapport DMARC, ou None si absent/illisible."""
-    try:
-        racine = ET.fromstring(xml_bytes)
-    except ET.ParseError:
-        return None
-    report_id = (racine.findtext("./report_metadata/report_id") or "").strip()
-    return report_id or None
+def xml_a_problemes(xml_bytes):
+    """Indique si un rapport DMARC contient au moins un échec DKIM/SPF."""
+    probleme_temporaire = {}
+    extract_problems_from_xml(xml_bytes, probleme_temporaire)
+    return bool(probleme_temporaire)
+
+
+def nettoyer_rapports(fichiers):
+    """Supprime les rapports sans problème et renomme les autres avec le report_id."""
+    supprimes = 0
+    conserves = 0
+    for path in fichiers:
+        contenu = read_xml_from_file(path)
+        if not contenu:
+            continue
+        if any(xml_a_problemes(xml_bytes) for xml_bytes in contenu):
+            for xml_bytes in contenu:
+                report_id = extraire_report_id(xml_bytes)
+                if report_id:
+                    if renommer_fichier_avec_report_id(path, report_id) != path:
+                        break
+            conserves += 1
+        else:
+            os.remove(path)
+            supprimes += 1
+            print(f"supprimé (aucun problème) : {path}")
+    print(f"{supprimes} rapport(s) sans problème supprimé(s), {conserves} conservé(s).")
 
 
 def extract_problems_from_xml(xml_bytes, problems):
@@ -195,12 +217,16 @@ def extract_problems_from_xml(xml_bytes, problems):
 def main():
     parser = argparse.ArgumentParser(description="Extraction des IP problématiques des rapports DMARC.")
     parser.add_argument("--renommer", action="store_true", help="renommer les rapports en ajoutant le report_id au nom de fichier")
+    parser.add_argument("--nettoyer", action="store_true", help="supprimer les rapports sans problème et renommer les autres avec le report_id")
     args = parser.parse_args()
     fichiers = iter_report_files()
     if not fichiers:
         print("Aucun fichier zip/gz/xml trouvé dans le répertoire courant.")
         return 1
-    if args.renommer:
+    if args.nettoyer:
+        nettoyer_rapports(fichiers)
+        fichiers = iter_report_files()
+    elif args.renommer:
         renommer_rapports(fichiers)
         fichiers = iter_report_files()
     problems = {}
