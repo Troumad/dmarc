@@ -12,10 +12,12 @@ renomme les rapports conservés avec leur report_id, puis produit
   - le type de problème (dkim et/ou spf)
   - le nombre de messages concernés
   - l'origine du problème (organisations ayant signalé l'IP)
+  - la première et la dernière fois que l'IP a posé problème
 """
 
 import argparse
 import csv
+import datetime
 import glob
 import gzip
 import hashlib
@@ -186,6 +188,15 @@ def extract_problems_from_xml(xml_bytes, problems):
     except ET.ParseError:
         return
     org_name = (racine.findtext("./report_metadata/org_name") or "").strip() or "inconnu"
+    debut_rapport = None
+    fin_rapport = None
+    try:
+        debut_rapport = datetime.datetime.fromtimestamp(
+            int((racine.findtext("./report_metadata/date_range/begin") or "").strip()), datetime.timezone.utc)
+        fin_rapport = datetime.datetime.fromtimestamp(
+            int((racine.findtext("./report_metadata/date_range/end") or "").strip()), datetime.timezone.utc)
+    except (ValueError, OSError, OverflowError):
+        pass
     for record in racine.iter("record"):
         source_ip_el = record.find("./row/source_ip")
         if source_ip_el is None or not (source_ip_el.text or "").strip():
@@ -212,7 +223,12 @@ def extract_problems_from_xml(xml_bytes, problems):
                 types_problemes.add("spf")
         if not types_problemes:
             continue
-        entree = problems.setdefault(ip, {"dkim": 0, "spf": 0, "messages": 0, "origines": []})
+        entree = problems.setdefault(
+            ip, {"dkim": 0, "spf": 0, "messages": 0, "origines": [], "premiere": None, "derniere": None})
+        if debut_rapport and (entree["premiere"] is None or debut_rapport < entree["premiere"]):
+            entree["premiere"] = debut_rapport
+        if fin_rapport and (entree["derniere"] is None or fin_rapport > entree["derniere"]):
+            entree["derniere"] = fin_rapport
         if "dkim" in types_problemes:
             entree["dkim"] += nb
         if "spf" in types_problemes:
@@ -260,13 +276,15 @@ def main():
     cache_whois = {}
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8-sig") as sortie:
         writer = csv.writer(sortie)
-        writer.writerow(["ip", "proprietaire", "probleme", "nombre", "origine"])
+        writer.writerow(["ip", "proprietaire", "probleme", "nombre", "origine", "premiere_fois", "derniere_fois"])
         for ip in sorted(problems):
             types = [t for t in ("dkim", "spf") if problems[ip][t] > 0]
             nombre = problems[ip]["messages"]
             proprietaire = lookup_ip_owner(ip, cache_whois)
             origine = " + ".join(problems[ip]["origines"])
-            writer.writerow([ip, proprietaire, " et ".join(types), nombre, origine])
+            premiere = problems[ip]["premiere"].strftime("%Y-%m-%d %H:%M") if problems[ip]["premiere"] else ""
+            derniere = problems[ip]["derniere"].strftime("%Y-%m-%d %H:%M") if problems[ip]["derniere"] else ""
+            writer.writerow([ip, proprietaire, " et ".join(types), nombre, origine, premiere, derniere])
     print(f"{len(problems)} IP problématiques écrites dans {OUTPUT_FILE}")
     return 0
 
