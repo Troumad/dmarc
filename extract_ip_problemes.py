@@ -9,6 +9,7 @@ détecte les enregistrements en échec DKIM ou SPF, puis produit
   - le propriétaire (WHOIS)
   - le type de problème (dkim et/ou spf)
   - le nombre de messages concernés
+  - l'origine du problème (organisations ayant signalé l'IP)
 """
 
 import csv
@@ -101,6 +102,7 @@ def extract_problems_from_xml(xml_bytes, problems):
         racine = ET.fromstring(xml_bytes)
     except ET.ParseError:
         return
+    org_name = (racine.findtext("./report_metadata/org_name") or "").strip() or "inconnu"
     for record in racine.iter("record"):
         source_ip_el = record.find("./row/source_ip")
         if source_ip_el is None or not (source_ip_el.text or "").strip():
@@ -127,12 +129,14 @@ def extract_problems_from_xml(xml_bytes, problems):
                 types_problemes.add("spf")
         if not types_problemes:
             continue
-        entree = problems.setdefault(ip, {"dkim": 0, "spf": 0, "messages": 0})
+        entree = problems.setdefault(ip, {"dkim": 0, "spf": 0, "messages": 0, "origines": []})
         if "dkim" in types_problemes:
             entree["dkim"] += nb
         if "spf" in types_problemes:
             entree["spf"] += nb
         entree["messages"] += nb
+        if org_name not in entree["origines"]:
+            entree["origines"].append(org_name)
 
 
 def main():
@@ -150,12 +154,13 @@ def main():
     cache_whois = {}
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8-sig") as sortie:
         writer = csv.writer(sortie)
-        writer.writerow(["ip", "proprietaire", "probleme", "nombre"])
+        writer.writerow(["ip", "proprietaire", "probleme", "nombre", "origine"])
         for ip in sorted(problems):
             types = [t for t in ("dkim", "spf") if problems[ip][t] > 0]
             nombre = problems[ip]["messages"]
             proprietaire = lookup_ip_owner(ip, cache_whois)
-            writer.writerow([ip, proprietaire, " et ".join(types), nombre])
+            origine = " + ".join(problems[ip]["origines"])
+            writer.writerow([ip, proprietaire, " et ".join(types), nombre, origine])
     print(f"{len(problems)} IP problématiques écrites dans {OUTPUT_FILE}")
     return 0
 
