@@ -12,9 +12,11 @@ détecte les enregistrements en échec DKIM ou SPF, puis produit
   - l'origine du problème (organisations ayant signalé l'IP)
 """
 
+import argparse
 import csv
 import glob
 import gzip
+import os
 import re
 import socket
 import sys
@@ -96,6 +98,54 @@ def lookup_ip_owner(ip, cache):
     return nom
 
 
+def extraire_report_id(xml_bytes):
+    """Renvoie le report_id d'un rapport DMARC, ou None si absent/illisible."""
+    try:
+        racine = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return None
+    report_id = (racine.findtext("./report_metadata/report_id") or "").strip()
+    return report_id or None
+
+
+def renommer_rapports(fichiers):
+    """Renomme les rapports en expéditeur!domaine!début!fin!report_id.ext.
+
+    Évite les collisions : les rapports Google/Microsoft d'une même journée
+    partagent le même nom de fichier alors que leur report_id diffère.
+    """
+    renommes = 0
+    for path in fichiers:
+        for xml_bytes in read_xml_from_file(path):
+            report_id = extraire_report_id(xml_bytes)
+            if not report_id:
+                continue
+            report_id_propre = re.sub(r"[!/:\*\?\"<>|]+", "_", report_id)
+            if path.lower().endswith(".xml.gz"):
+                base, ext = path[:-7], ".xml.gz"
+            else:
+                base, ext = os.path.splitext(path)
+            nouveau_nom = f"{base}!{report_id_propre}{ext}"
+            if nouveau_nom == path or os.path.exists(nouveau_nom):
+                continue
+            os.rename(path, nouveau_nom)
+            renommes += 1
+            print(f"{path} -> {os.path.basename(nouveau_nom)}")
+            break
+    if renommes:
+        print(f"{renommes} fichier(s) renommé(s).")
+
+
+def extraire_report_id(xml_bytes):
+    """Renvoie le report_id d'un rapport DMARC, ou None si absent/illisible."""
+    try:
+        racine = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return None
+    report_id = (racine.findtext("./report_metadata/report_id") or "").strip()
+    return report_id or None
+
+
 def extract_problems_from_xml(xml_bytes, problems):
     """Analyse un rapport DMARC et agrège les échecs DKIM/SPF par IP."""
     try:
@@ -137,17 +187,36 @@ def extract_problems_from_xml(xml_bytes, problems):
         entree["messages"] += nb
         if org_name not in entree["origines"]:
             entree["origines"].append(org_name)
+        report_id = (racine.findtext("./report_metadata/report_id") or "").strip()
+        if report_id:
+            entree.setdefault("report_ids", set()).add(report_id)
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Extraction des IP problématiques des rapports DMARC.")
+    parser.add_argument("--renommer", action="store_true", help="renommer les rapports en ajoutant le report_id au nom de fichier")
+    args = parser.parse_args()
     fichiers = iter_report_files()
     if not fichiers:
         print("Aucun fichier zip/gz/xml trouvé dans le répertoire courant.")
         return 1
+    if args.renommer:
+        renommer_rapports(fichiers)
+        fichiers = iter_report_files()
     problems = {}
+    report_ids_vus = set()
+    rapports_ignore = 0
     for path in fichiers:
         for xml_bytes in read_xml_from_file(path):
+            report_id = extraire_report_id(xml_bytes)
+            if report_id and report_id in report_ids_vus:
+                rapports_ignore += 1
+                continue
+            if report_id:
+                report_ids_vus.add(report_id)
             extract_problems_from_xml(xml_bytes, problems)
+    if rapports_ignore:
+        print(f"{rapports_ignore} rapport(s) en double ignoré(s).")
     if not problems:
         print("Aucune IP en échec DKIM/SPF détectée : pas de fichier généré.")
         return 0
