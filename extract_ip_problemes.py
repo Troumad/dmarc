@@ -13,6 +13,10 @@ renomme les rapports conservés avec leur report_id, puis produit
   - le nombre de messages concernés
   - l'origine du problème (organisations ayant signalé l'IP)
   - la première et la dernière fois que l'IP a posé problème
+et "origine.csv" avec, par fichier de rapport concerné :
+  - le fichier concerné
+  - le propriétaire des IP problématiques du fichier (champ proprietaire
+    de ip_probleme.csv)
 """
 
 import argparse
@@ -29,6 +33,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 OUTPUT_FILE = "ip_probleme.csv"
+OUTPUT_ORIGINE_FILE = "origine.csv"
 WHOIS_TIMEOUT = 10
 
 
@@ -181,7 +186,7 @@ def nettoyer_rapports(fichiers):
     print(f"{supprimes} rapport(s) supprimé(s) (sans problème ou en double), {conserves} conservé(s).")
 
 
-def extract_problems_from_xml(xml_bytes, problems):
+def extract_problems_from_xml(xml_bytes, problems, source=None):
     """Analyse un rapport DMARC et agrège les échecs DKIM/SPF par IP."""
     try:
         racine = ET.fromstring(xml_bytes)
@@ -225,6 +230,8 @@ def extract_problems_from_xml(xml_bytes, problems):
             continue
         entree = problems.setdefault(
             ip, {"dkim": 0, "spf": 0, "messages": 0, "origines": [], "premiere": None, "derniere": None})
+        if source:
+            entree.setdefault("fichiers", set()).add(source)
         if debut_rapport and (entree["premiere"] is None or debut_rapport < entree["premiere"]):
             entree["premiere"] = debut_rapport
         if fin_rapport and (entree["derniere"] is None or fin_rapport > entree["derniere"]):
@@ -267,13 +274,14 @@ def main():
                 rapports_ignore += 1
                 continue
             empreintes_vues.add(empreinte)
-            extract_problems_from_xml(xml_bytes, problems)
+            extract_problems_from_xml(xml_bytes, problems, source=path)
     if rapports_ignore:
         print(f"{rapports_ignore} rapport(s) en double ignoré(s).")
     if not problems:
         print("Aucune IP en échec DKIM/SPF détectée : pas de fichier généré.")
         return 0
     cache_whois = {}
+    proprietaires = {}
     with open(OUTPUT_FILE, "w", newline="", encoding="utf-8-sig") as sortie:
         writer = csv.writer(sortie)
         writer.writerow(["ip", "proprietaire", "probleme", "nombre", "origine", "premiere_fois", "derniere_fois"])
@@ -281,11 +289,20 @@ def main():
             types = [t for t in ("dkim", "spf") if problems[ip][t] > 0]
             nombre = problems[ip]["messages"]
             proprietaire = lookup_ip_owner(ip, cache_whois)
+            proprietaires[ip] = proprietaire
             origine = " + ".join(problems[ip]["origines"])
             premiere = problems[ip]["premiere"].strftime("%Y-%m-%d %H:%M") if problems[ip]["premiere"] else ""
             derniere = problems[ip]["derniere"].strftime("%Y-%m-%d %H:%M") if problems[ip]["derniere"] else ""
             writer.writerow([ip, proprietaire, " et ".join(types), nombre, origine, premiere, derniere])
     print(f"{len(problems)} IP problématiques écrites dans {OUTPUT_FILE}")
+    couples = sorted({(fichier, proprietaires[ip])
+                      for ip, entree in problems.items()
+                      for fichier in entree.get("fichiers", ())})
+    with open(OUTPUT_ORIGINE_FILE, "w", newline="", encoding="utf-8-sig") as sortie:
+        writer = csv.writer(sortie)
+        writer.writerow(["fichier", "proprietaire"])
+        writer.writerows(couples)
+    print(f"{len(couples)} ligne(s) écrite(s) dans {OUTPUT_ORIGINE_FILE}")
     return 0
 
 
